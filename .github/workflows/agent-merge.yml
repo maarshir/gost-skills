@@ -1,0 +1,47 @@
+name: Тесты и слияние
+
+# Запускается, когда задача пушит ветку с именем agent/...
+# Если проверки прошли, ветка сливается в main. Если нет, остаётся как есть.
+on:
+  push:
+    branches: ['agent/**']
+
+permissions:
+  contents: write
+
+# Не даём двум слияниям идти одновременно
+concurrency:
+  group: agent-merge
+  cancel-in-progress: false
+
+jobs:
+  test-and-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Проверки
+        run: |
+          set -e
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -n "$(git ls-files '*.py')" ]; then python -m compileall -q $(git ls-files '*.py'); fi
+          if [ -d tests ]; then pip install pytest; python -m pytest -q; fi
+          for f in $(git ls-files '*.js'); do node --check "$f"; done
+
+      - name: Слить в main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git merge --no-ff "origin/${GITHUB_REF_NAME}" -m "Слияние ${GITHUB_REF_NAME}: проверки прошли"
+          git push origin main
