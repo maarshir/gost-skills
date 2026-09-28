@@ -1,0 +1,46 @@
+name: Тесты
+
+# Обычная проверка тестов, отдельно от agent-merge.yml (тот только сливает ветки agent/...).
+# Коммиты бота слияния другие workflow не запускают, поэтому есть еженедельное расписание.
+on:
+  push:
+    branches: ['main', 'work/**']
+  pull_request:
+  schedule:
+    - cron: '41 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 проверяет запасной путь через tomli, 3.12 текущая
+        python-version: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Зависимости
+        run: pip install -r requirements.txt pytest
+
+      - name: Тесты скриптов и проверка SKILL.md
+        run: python -m pytest -q
+
+      # Пример из README: проверка должна найти ошибки и вернуть код 1
+      - name: Пример из README
+        run: |
+          python examples/make_example.py /tmp/example.docx
+          set +e
+          python skills/gost-report/scripts/check_docx.py /tmp/example.docx
+          code=$?
+          set -e
+          test "$code" -eq 1
