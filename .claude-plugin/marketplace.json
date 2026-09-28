@@ -1,0 +1,21 @@
+{
+  "name": "gost-skills",
+  "owner": {
+    "name": "maarshir"
+  },
+  "metadata": {
+    "description": "Навыки для документов по ГОСТу: проверка и оформление работ в .docx",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "gost-skills",
+      "description": "Проверка и оформление курсовых, ВКР и отчётов по ГОСТ 7.32-2017",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/gost-report"
+      ]
+    }
+  ]
+}
