@@ -1,0 +1,4 @@
+python-docx>=1.1
+tomli>=2.0; python_version < "3.11"
+# только для тестов: проверка SKILL.md
+pyyaml>=6.0
