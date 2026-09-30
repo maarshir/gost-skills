@@ -90,3 +90,17 @@ def test_every_issue_code_is_documented():
         prefix = code.split("-")[0]
         assert (f"`{code}`" in fixes or f"`{prefix}-*`" in fixes or
                 f"`*-{code.split('-', 1)[-1]}`" in fixes), f"{code} без способа исправить в fix-in-word.md"
+
+
+def test_every_bibliography_code_is_documented():
+    """Каждый код проверки списка литературы объяснён в rules.md."""
+    skill = ROOT / "skills" / "gost-bibliography"
+    source = (skill / "scripts" / "check_bibliography.py").read_text(encoding="utf-8")
+    block = source.split("RULES = {", 1)[1].split("\n}\n", 1)[0]
+    codes = set(re.findall(r'^    "([a-z\-]+)":', block, re.M))
+    assert len(codes) > 30
+    rules = (skill / "references" / "rules.md").read_text(encoding="utf-8")
+    for code in codes:
+        assert f"`{code}`" in rules, f"{code} не описан в rules.md"
+    documented = set(re.findall(r"^\| `([a-z\-]+)` \|", rules, re.M))
+    assert documented <= codes, f"в rules.md есть коды, которых нет в скрипте: {documented - codes}"
