@@ -44,3 +44,12 @@ jobs:
           code=$?
           set -e
           test "$code" -eq 1
+
+      # Пример списка литературы из README: тоже код 1
+      - name: Пример списка литературы
+        run: |
+          set +e
+          python skills/gost-bibliography/scripts/check_bibliography.py examples/bibliography.txt
+          code=$?
+          set -e
+          test "$code" -eq 1
