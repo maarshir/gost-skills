@@ -1,0 +1,17 @@
+# Пример настроек под методичку вуза: только то, что отличается от ГОСТ Р 7.0.100.
+#   python scripts/check_bibliography.py список.txt --config assets/methodichka-example.toml
+
+name = "ГОСТ Р 7.0.100-2018 + пример методички"
+
+[content_type]
+required = true          # в конце каждой записи «– Текст : непосредственный.» или «электронный»
+
+[place]
+allow_abbreviations = false   # «Москва», а не «М.»
+
+[order]
+mode = "alphabet"
+legal_first = true       # сначала законы и стандарты, потом остальное по алфавиту
+
+[freshness]
+max_age_years = 10       # источники не старше 10 лет
