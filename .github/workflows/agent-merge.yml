@@ -1,21 +1,23 @@
 name: Тесты и слияние
 
-# Запускается, когда задача пушит ветку с именем agent/...
-# Если проверки прошли, ветка сливается в main. Если нет, остаётся как есть.
+# Запускается, когда пушится ветка feature/..., fix/... (или старая agent/...).
+# Если проверки прошли, ветка сжимается в один коммит в main и удаляется.
+# Если нет, ветка остаётся как есть.
 on:
   push:
-    branches: ['agent/**']
+    branches: ['feature/**', 'fix/**', 'agent/**']
 
 permissions:
   contents: write
 
 # Не даём двум слияниям идти одновременно
 concurrency:
-  group: agent-merge
+  group: branch-merge
   cancel-in-progress: false
 
 jobs:
   test-and-merge:
+    if: github.event.deleted != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,10 +40,26 @@ jobs:
           if [ -d tests ]; then pip install pytest; python -m pytest -q; fi
           for f in $(git ls-files '*.js'); do node --check "$f"; done
 
-      - name: Слить в main
+      - name: Сжать в main и удалить ветку
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set -e
+          BRANCH="${GITHUB_REF_NAME}"
+          SRC="origin/${BRANCH}"
+          git config user.name "$(git log -1 --format=%an "$SRC")"
+          git config user.email "$(git log -1 --format=%ae "$SRC")"
           git checkout main
-          git merge --no-ff "origin/${GITHUB_REF_NAME}" -m "Слияние ${GITHUB_REF_NAME}: проверки прошли"
-          git push origin main
+          TITLE="$(git log -1 --format=%s "$SRC")"
+          COUNT="$(git rev-list --count "main..$SRC")"
+          git merge --squash "$SRC"
+          if git diff --cached --quiet; then
+            echo "Изменений нет, коммит не нужен"
+          else
+            if [ "$COUNT" -gt 1 ]; then
+              BODY="$(git log --reverse --format='- %s' "main..$SRC")"
+              git commit -m "$TITLE" -m "$BODY"
+            else
+              git commit -m "$TITLE"
+            fi
+            git push origin main
+          fi
+          git push origin --delete "$BRANCH"
