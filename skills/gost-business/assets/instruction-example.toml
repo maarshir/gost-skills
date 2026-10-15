@@ -1,0 +1,18 @@
+# Пример настроек под инструкцию по делопроизводству организации. Здесь только то,
+# что отличается от ГОСТ Р 7.0.97; остальное берётся из gost-r-7.0.97.toml. Запуск:
+#   python scripts/check_docx.py письмо.docx --config assets/instruction-example.toml
+
+name = "ГОСТ Р 7.0.97-2016 + пример инструкции"
+
+[text]
+fonts = ["Times New Roman"]   # только один шрифт
+size_min_pt = 14              # строго 14 пт
+rule = "инструкция"
+
+[date]
+words_allowed = false         # даты только цифрами
+rule = "инструкция"
+
+# Поля бывают шире, например левое 30 мм:
+# [page]
+# margin_left_mm = 30

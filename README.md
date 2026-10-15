@@ -27,7 +27,7 @@ Claude Code:
 |-------|---------------|
 | [gost-report](skills/gost-report/SKILL.md) | Курсовая, ВКР, отчёт по ГОСТ 7.32-2017: поля, шрифт, интервалы, заголовки, новые страницы, номера страниц, подписи рисунков и таблиц, ссылки на источники, приложения |
 | [gost-bibliography](skills/gost-bibliography/SKILL.md) | Список литературы по ГОСТ Р 7.0.100-2018: знаки между областями, авторы, страницы, адреса и даты обращения, нумерация, повторы, порядок. Плюс образцы записей |
-| [gost-business](skills/gost-business/SKILL.md) | Письмо, приказ, служебная записка, протокол по ГОСТ Р 7.0.97-2016: состав и порядок реквизитов, адресат, дата и номер, подпись, грифы, отметки о приложении и об исполнителе. Образцы каждого документа |
+| [gost-business](skills/gost-business/SKILL.md) | Письмо, приказ, служебная записка, протокол по ГОСТ Р 7.0.97-2016: состав и порядок реквизитов, адресат, дата и номер, подпись, грифы, отметки о приложении и об исполнителе. Образцы каждого документа. Скриптом в .docx: лист и поля, шрифт и размер, абзацный отступ, запись дат |
 
 Так выглядит проверка списка литературы:
 
@@ -67,9 +67,10 @@ pip install -r requirements.txt
 python skills/gost-report/scripts/check_docx.py работа.docx
 python skills/gost-report/scripts/check_docx.py работа.docx --config методичка.toml --json
 python skills/gost-bibliography/scripts/check_bibliography.py список.txt
+python skills/gost-business/scripts/check_docx.py письмо.docx
 ```
 
-Файл не меняется. Требования методички задаются коротким файлом поверх ГОСТа: [пример для работы](skills/gost-report/assets/methodichka-example.toml), [пример для списка](skills/gost-bibliography/assets/methodichka-example.toml).
+Файл не меняется. Требования методички или инструкции организации задаются коротким файлом поверх ГОСТа: [пример для работы](skills/gost-report/assets/methodichka-example.toml), [пример для списка](skills/gost-bibliography/assets/methodichka-example.toml), [пример для деловых документов](skills/gost-business/assets/instruction-example.toml).
 
 ## Что было непросто
 
@@ -80,7 +81,7 @@ python skills/gost-bibliography/scripts/check_bibliography.py список.txt
 
 ## Что дальше
 
-- Проверка деловых документов в .docx скриптом по ГОСТ Р 7.0.97.
+- Проверка реквизитов делового документа скриптом: адресат в дательном падеже, подпись, отметки о приложении и об исполнителе.
 - Исправление типовых ошибок в копии файла.
 
-124 теста. Лицензия MIT.
+148 тестов. Лицензия MIT.
