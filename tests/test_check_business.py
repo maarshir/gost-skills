@@ -116,6 +116,9 @@ SPOILED = {
     "date-format": (cb.ERROR, with_text("05.03.2026", "5.3.2026 № 12-04/37")),
     "date-invalid": (cb.ERROR, with_text("05.03.2026", "31.02.2026 № 12-04/37")),
     "date-year": (cb.WARNING, with_text("05.03.2026", "5 марта 2026 года № 12-04/37")),
+    "addressee-case": (cb.ERROR, with_text("Директору", "Директор ООО «Партнёр»")),
+    "title-dot": (cb.ERROR, with_text("О поставке", "О поставке бумаги.")),
+    "signature-initials": (cb.ERROR, with_text("Генеральный", "Генеральный директор\tПетров П.П.")),
 }
 
 
@@ -227,6 +230,83 @@ def test_bad_inputs(tmp_path, capsys):
     broken = tmp_path / "broken.docx"
     broken.write_text("не архив")
     assert cb.main([str(broken)]) == 2
+
+
+def insert_before(letter, start, text, right=False):
+    p = letter.para(start).insert_paragraph_before(text)
+    if right:
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    return p
+
+
+@pytest.mark.parametrize("word, good", [
+    ("Директор", "Директору"), ("Генеральный", "Генеральному"), ("Заместитель", "Заместителю"),
+    ("Главный", "Главному"), ("Управляющий", "Управляющему"), ("Технический", "Техническому"),
+    ("Глава", "Главе"), ("Начальник", "Начальнику"),
+])
+def test_dative_suggestion(word, good):
+    assert cb.dative(word) == good
+
+
+def test_addressee_message_and_place(tmp_path):
+    letter = Letter()
+    with_text("Директору", "Генеральный директор ООО «Партнёр»")(letter)
+    issue = check(letter, tmp_path).issues[0]
+    assert issue.message == "Адресат в именительном падеже: «Генеральный», нужно «Генеральному»"
+    assert issue.places[0].paragraph == 4
+
+
+def test_addressee_by_indent_or_tab(tmp_path):
+    letter = Letter()
+    p = letter.para("Директору")
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p.paragraph_format.left_indent = Cm(9)
+    p.runs[0].text = "Начальник отдела кадров"
+    assert codes(check(letter, tmp_path)) == {"addressee-case"}
+    p.paragraph_format.left_indent = Cm(0)
+    p.runs[0].text = "\tНачальник отдела кадров"
+    assert codes(check(letter, tmp_path)) == {"addressee-case"}
+
+
+def test_doubtful_head_lines_are_skipped(tmp_path):
+    letter = Letter()
+    # должность автора на бланке слева, гриф утверждения справа, организация адресата
+    insert_before(letter, "ООО «Пример»", "Генеральный директор ООО «Пример»")
+    for line in ("УТВЕРЖДАЮ", "Генеральный директор", "П.П. Петров"):
+        insert_before(letter, "Директору", line, right=True)
+    insert_before(letter, "И.И. Иванову", "ООО «Партнёр»", right=True)
+    assert codes(check(letter, tmp_path)) == set()
+
+
+def test_title_may_end_with_abbreviation(tmp_path):
+    letter = Letter()
+    with_text("О поставке", "Об итогах работы за 2025 г.")(letter)
+    assert codes(check(letter, tmp_path)) == set()
+
+
+def test_signature_on_two_lines(tmp_path):
+    letter = Letter()
+    with_text("Генеральный", "Генеральный директор")(letter)
+    p = letter.para("Генеральный")
+    p._p.addnext(letter.doc.add_paragraph("Петров П.П.")._p)
+    report = check(letter, tmp_path)
+    assert codes(report) == {"signature-initials"}
+    assert report.issues[0].message == "Расшифровка подписи «Петров П.П.», нужно «П.П. Петров»"
+
+
+def test_names_in_text_and_executor_are_not_signatures(tmp_path):
+    letter = Letter()
+    insert_before(letter, "Генеральный", "Ответственный исполнитель Иванов И.И.")
+    with_text("Сидорова", "Сидорова А.П.")(letter)
+    assert codes(check(letter, tmp_path)) == set()
+
+
+def test_signature_check_can_be_turned_off(tmp_path):
+    letter = Letter()
+    SPOILED["signature-initials"][1](letter)
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text("[signature]\ninitials_first = false\n", encoding="utf-8")
+    assert codes(check(letter, tmp_path, cfg)) == set()
 
 
 def test_every_code_is_in_checks_md():

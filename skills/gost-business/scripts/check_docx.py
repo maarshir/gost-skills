@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Проверка деловых документов .docx по ГОСТ Р 7.0.97-2016 или по инструкции организации.
 
-Скрипт ничего не меняет в файле. Он проверяет лист, шрифт, абзацный отступ
-и даты и печатает, что не так и где: номер абзаца и начало его текста.
+Скрипт ничего не меняет в файле. Он проверяет лист, шрифт, абзацный отступ,
+даты, падеж адресата, расшифровку подписи и точку после заголовка к тексту
+и печатает, что не так и где: номер абзаца и начало его текста.
 
     python check_docx.py письмо.docx
     python check_docx.py письмо.docx --config инструкция.toml
@@ -59,6 +60,22 @@ DATE_WORDS_RE = re.compile(
     r"(?<!\d)(\d{1,2})\s+(" + "|".join(MONTHS) + r")\s+(\d{4})(\s*(?:г\.|года\b|г\b))?",
     re.IGNORECASE,
 )
+# Первое слово должности в именительном падеже. По нему узнаём адресат, записанный
+# не в дательном падеже, и строку подписи. Список намеренно короткий: незнакомую
+# должность скрипт пропустит, а не отметит зря.
+POSITIONS = {
+    "директор", "генеральный", "исполнительный", "технический", "коммерческий", "финансовый",
+    "первый", "заместитель", "начальник", "руководитель", "председатель", "президент",
+    "вице-президент", "глава", "ректор", "проректор", "декан", "министр", "управляющий",
+    "заведующий", "главный", "старший", "ведущий", "менеджер", "специалист", "инженер",
+    "бухгалтер", "секретарь", "инспектор", "советник", "помощник", "губернатор", "мэр",
+}
+GRIF_RE = re.compile(r"^\s*(УТВЕРЖДА|УТВЕРЖДЕН|СОГЛАСОВАН)")
+# «Петров П.П.» или «Петров П.» в конце строки
+NAME_AFTER_RE = re.compile(r"([А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?)\s+([А-ЯЁ])\.(?:\s*([А-ЯЁ])\.)?$")
+TITLE_RE = re.compile(r"^(О|Об|Обо)\s+\S")
+# Сокращения, после которых точка в конце заголовка уместна: «за 2025 г.»
+ABBR_END_RE = re.compile(r"(?:\b(?:г|гг|др|пр|руб|коп)|т\.\s?[дп])\.$")
 PHONE_RE = re.compile(r"(?:\+7|8)[\s(\-]*\d{3}[\s)\-]*\d{3}[\s\-]?\d{2}[\s\-]?\d{2}|тел\.|@")
 
 
@@ -69,6 +86,27 @@ def load_config(path: Path | None = None) -> dict:
         with open(path, "rb") as f:
             config = base.deep_merge(config, tomllib.load(f))
     return config
+
+
+def first_word(text: str) -> str:
+    m = re.match(r"\s*([А-ЯЁа-яё\-]+)", text)
+    return m.group(1) if m else ""
+
+
+def dative(word: str) -> str:
+    """Дательный падеж первого слова должности: «Директор» → «Директору»."""
+    low = word.lower()
+    if low.endswith(("ый", "ой")):
+        out = word[:-2] + "ому"
+    elif low.endswith("ий"):
+        out = word[:-2] + ("ому" if low[-3:-2] in "кгх" else "ему")
+    elif low.endswith("ь"):
+        out = word[:-1] + "ю"
+    elif low.endswith("а"):
+        out = word[:-1] + "е"
+    else:
+        out = word + "у"
+    return out
 
 
 def real_date(day: int, month: int, year: int) -> bool:
@@ -90,6 +128,9 @@ class Checker:
         self.paras = [el for el in self.doc.element.body if el.tag == qn("w:p")]
         self.texts = [base.para_text(p) for p in self.paras]
         self.executor = self._executor_paragraphs()
+        # Первый абзац текста делит документ на шапку (адресат, заголовок) и конец (подпись).
+        min_chars = config["text"].get("body_min_chars", 100)
+        self.body_start = next((i for i, t in enumerate(self.texts) if len(t.strip()) >= min_chars), None)
 
     def place(self, i: int) -> Place:
         return Place(i + 1, base.short(self.texts[i]))
@@ -98,6 +139,9 @@ class Checker:
         self.check_page()
         self.check_text()
         self.check_dates()
+        self.check_addressee()
+        self.check_title()
+        self.check_signature()
         return self.report
 
     # --- лист
@@ -235,9 +279,81 @@ class Checker:
                     self.report.add(WARNING, "date-year",
                                     f"После года нужно «г.»: «{int(day)} {month} {year} г.»", rule, place)
 
+    # --- реквизиты по тексту
+
+    def head(self) -> list[int]:
+        """Непустые абзацы шапки, до первого абзаца текста."""
+        end = self.body_start if self.body_start is not None else len(self.paras)
+        return [i for i in range(end) if self.texts[i].strip()]
+
+    def left_indent_cm(self, p) -> float:
+        def get(ppr):
+            ind = ppr.find(qn("w:ind"))
+            if ind is None:
+                return None
+            val = ind.get(qn("w:left")) or ind.get(qn("w:start"))
+            return int(val) / base.TWIPS_PER_CM if val is not None else None
+        return self.styles.para_prop(p, get) or 0.0
+
+    def shifted_right(self, i: int) -> bool:
+        """Адресат стоит справа: выравнивание по правому краю, большой отступ слева или табуляция."""
+        p = self.paras[i]
+        return (self.styles.alignment(p) == "right" or self.left_indent_cm(p) >= 5
+                or self.texts[i].startswith("\t"))
+
+    def check_addressee(self) -> None:
+        rule = self.config["addressee"].get("rule", "")
+        grif_left = 0
+        for i in self.head():
+            text = self.texts[i].strip()
+            if GRIF_RE.match(text):
+                grif_left = 4  # должность в грифе утверждения пишется в именительном
+                continue
+            if grif_left:
+                grif_left -= 1
+                continue
+            word = first_word(text)
+            if word.lower() not in POSITIONS or not self.shifted_right(i):
+                continue
+            self.report.add(ERROR, "addressee-case",
+                            f"Адресат в именительном падеже: «{word}», нужно «{dative(word)}»",
+                            rule, self.place(i))
+
+    def check_title(self) -> None:
+        rule = self.config["title"].get("rule", "")
+        for i in self.head():
+            text = self.texts[i].strip()
+            if TITLE_RE.match(text) and text.endswith(".") and not ABBR_END_RE.search(text):
+                self.report.add(ERROR, "title-dot", "Точка в конце заголовка к тексту", rule, self.place(i))
+
+    def check_signature(self) -> None:
+        cfg = self.config["signature"]
+        if self.body_start is None or not cfg.get("initials_first", True):
+            return
+        rule = cfg.get("rule", "")
+        prev = ""
+        for i in range(self.body_start + 1, len(self.paras)):
+            raw = self.texts[i].strip()
+            if not raw:
+                continue
+            if i in self.executor:
+                break  # в отметке об исполнителе фамилия может стоять первой
+            m = NAME_AFTER_RE.search(raw)
+            if m and len(raw) < 100:
+                before = raw[:m.start()]
+                in_line = (first_word(raw).lower() in POSITIONS
+                           and re.search(r"\t|\s{2,}", before) is not None)
+                alone = not before.strip() and first_word(prev).lower() in POSITIONS
+                if in_line or alone:
+                    surname, initials = m.group(1), m.group(2) + "." + (m.group(3) + "." if m.group(3) else "")
+                    self.report.add(ERROR, "signature-initials",
+                                    f"Расшифровка подписи «{m.group(0)}», нужно «{initials} {surname}»",
+                                    rule, self.place(i))
+            prev = raw
+
 
 CLEAN = ("Нарушений не найдено. Проверьте глазами то, что скрипт не видит: состав и порядок реквизитов, "
-         "адресат, подпись, отметки о приложении и об исполнителе.")
+         "отметки о приложении и об исполнителе.")
 
 
 def render_text(path: Path, config: dict, report: Report, limit: int = 5) -> str:
