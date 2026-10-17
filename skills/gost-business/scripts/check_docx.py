@@ -2,8 +2,9 @@
 """Проверка деловых документов .docx по ГОСТ Р 7.0.97-2016 или по инструкции организации.
 
 Скрипт ничего не меняет в файле. Он проверяет лист, шрифт, абзацный отступ,
-даты, падеж адресата, расшифровку подписи и точку после заголовка к тексту
-и печатает, что не так и где: номер абзаца и начало его текста.
+даты, падеж адресата, расшифровку подписи, точку после заголовка к тексту,
+отметки о приложении и об исполнителе и печатает, что не так и где:
+номер абзаца и начало его текста.
 
     python check_docx.py письмо.docx
     python check_docx.py письмо.docx --config инструкция.toml
@@ -77,6 +78,19 @@ TITLE_RE = re.compile(r"^(О|Об|Обо)\s+\S")
 # Сокращения, после которых точка в конце заголовка уместна: «за 2025 г.»
 ABBR_END_RE = re.compile(r"(?:\b(?:г|гг|др|пр|руб|коп)|т\.\s?[дп])\.$")
 PHONE_RE = re.compile(r"(?:\+7|8)[\s(\-]*\d{3}[\s)\-]*\d{3}[\s\-]?\d{2}[\s\-]?\d{2}|тел\.|@")
+# Сам номер телефона: не меньше пяти цифр подряд, можно через пробелы, скобки и дефисы
+PHONE_DIGITS_RE = re.compile(r"(?:\d[\s()\-]*){5,}")
+# Исполнитель: «А.П. Сидорова», «Сидорова А.П.» или фамилия, имя и отчество полностью
+WORD = r"[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?"
+EXECUTOR_NAME_RE = re.compile(
+    rf"[А-ЯЁ]\.\s?(?:[А-ЯЁ]\.\s?)?{WORD}|{WORD}\s+[А-ЯЁ]\.\s?(?:[А-ЯЁ]\.)?"
+    rf"|(?:{WORD}\s+){{2}}{WORD}"
+)
+# Отметка о приложении: «Приложение: отчёт на 5 л. в 1 экз.», для нескольких «Приложения:» и пункты
+ATTACH_RE = re.compile(r"^\s*Приложени[ея]\s*:\s*(.*)$", re.S)
+ITEM_RE = re.compile(r"^\s*\d+\.\s")
+SHEETS_RE = re.compile(r"\d+\s*л\.")
+COPIES_RE = re.compile(r"\d+\s*экз\.")
 
 
 def load_config(path: Path | None = None) -> dict:
@@ -142,6 +156,8 @@ class Checker:
         self.check_addressee()
         self.check_title()
         self.check_signature()
+        self.check_attachment()
+        self.check_executor()
         return self.report
 
     # --- лист
@@ -351,9 +367,58 @@ class Checker:
                                     rule, self.place(i))
             prev = raw
 
+    def attachment_items(self, i: int, rest: str) -> list[tuple[int, str]]:
+        """Пункты отметки о приложении: та же строка или пункты с номерами под ней."""
+        items = [(i, rest)] if rest else []
+        if rest and not ITEM_RE.match(rest):
+            return items
+        for j in range(i + 1, len(self.paras)):
+            text = self.texts[j].strip()
+            ppr = self.paras[j].find(qn("w:pPr"))
+            numbered = ppr is not None and ppr.find(qn("w:numPr")) is not None
+            if not text or not (ITEM_RE.match(text) or numbered):
+                break
+            items.append((j, text))
+        return items
+
+    def check_attachment(self) -> None:
+        cfg = self.config.get("attachment", {})
+        if not cfg.get("check", True):
+            return
+        rule = cfg.get("rule", "")
+        for i, raw in enumerate(self.texts):
+            m = ATTACH_RE.match(raw.replace(" ", " "))
+            if not m:
+                continue
+            for j, text in self.attachment_items(i, m.group(1).strip()):
+                low = text.lower()
+                # Сброшюрованное приложение листами не считают (5.20)
+                if not SHEETS_RE.search(text) and "сброшюр" not in low:
+                    self.report.add(ERROR, "attachment-sheets", "В отметке о приложении нет числа листов",
+                                    rule, self.place(j))
+                # «...и приложение к нему, всего на 5 л.» по ГОСТу пишут без экземпляров
+                if not COPIES_RE.search(text) and "всего" not in low:
+                    self.report.add(WARNING, "attachment-copies", "В отметке о приложении нет числа экземпляров",
+                                    rule, self.place(j))
+
+    def check_executor(self) -> None:
+        """Отметку ищем в конце документа по телефону или почте; если её нет, ничего не отмечаем."""
+        cfg = self.config.get("executor", {})
+        if not cfg.get("check", True) or not self.executor:
+            return
+        rule = cfg.get("rule", "")
+        lines = sorted(self.executor)
+        texts = [self.texts[i].replace(" ", " ") for i in lines]
+        place = self.place(lines[0])
+        if not any(EXECUTOR_NAME_RE.search(t) for t in texts):
+            self.report.add(ERROR, "executor-name",
+                            "В отметке об исполнителе нет инициалов или имени и отчества", rule, place)
+        if not any(PHONE_DIGITS_RE.search(t) for t in texts):
+            self.report.add(ERROR, "executor-phone", "В отметке об исполнителе нет номера телефона", rule, place)
+
 
 CLEAN = ("Нарушений не найдено. Проверьте глазами то, что скрипт не видит: состав и порядок реквизитов, "
-         "отметки о приложении и об исполнителе.")
+         "место отметки об исполнителе на последнем листе.")
 
 
 def render_text(path: Path, config: dict, report: Report, limit: int = 5) -> str:

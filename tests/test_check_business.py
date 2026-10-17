@@ -45,6 +45,7 @@ class Letter:
         body = self.doc.add_paragraph(BODY)
         body.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         body.paragraph_format.first_line_indent = Cm(1.25)
+        self.doc.add_paragraph("Приложение: прайс-лист на 2 л. в 1 экз.")
         self.doc.add_paragraph("Генеральный директор\tП.П. Петров")
         self.doc.add_paragraph("")
         for line in ("Сидорова Анна Петровна", "+7 495 123-45-67"):
@@ -119,6 +120,10 @@ SPOILED = {
     "addressee-case": (cb.ERROR, with_text("Директору", "Директор ООО «Партнёр»")),
     "title-dot": (cb.ERROR, with_text("О поставке", "О поставке бумаги.")),
     "signature-initials": (cb.ERROR, with_text("Генеральный", "Генеральный директор\tПетров П.П.")),
+    "attachment-sheets": (cb.ERROR, with_text("Приложение", "Приложение: прайс-лист в 1 экз.")),
+    "attachment-copies": (cb.WARNING, with_text("Приложение", "Приложение: прайс-лист на 2 л.")),
+    "executor-name": (cb.ERROR, with_text("Сидорова", "Сидорова")),
+    "executor-phone": (cb.ERROR, with_text("+7", "sidorova@primer.ru")),
 }
 
 
@@ -316,3 +321,51 @@ def test_every_code_is_in_checks_md():
     documented = set(re.findall(r"^\| `([a-z\-]+)` \|", checks, re.M))
     assert in_script == documented
     assert set(SPOILED) | {"date-words"} == in_script, "у каждого кода свой тест"
+
+
+def test_numbered_attachments_are_checked_one_by_one(tmp_path):
+    letter = Letter()
+    with_text("Приложение", "Приложения:")(letter)
+    insert_before(letter, "Генеральный", "1. Прайс-лист на 2 л. в 1 экз.")
+    insert_before(letter, "Генеральный", "2. Договор поставки в 2 экз.")
+    report = check(letter, tmp_path)
+    assert codes(report) == {"attachment-sheets"}
+    assert report.issues[0].places[0].text.startswith("2. Договор")
+    assert report.issues[0].message == "В отметке о приложении нет числа листов"
+
+
+@pytest.mark.parametrize("text", [
+    "Приложение: каталог продукции, сброшюрованный, в 1 экз.",
+    "Приложение: письмо ООО «Партнёр» от 01.03.2026 № 15 и приложение к нему, всего на 5 л.",
+    "Приложение: 1. Прайс-лист на 2 л. в 1 экз.",
+])
+def test_doubtful_attachments_are_skipped(text, tmp_path):
+    letter = Letter()
+    with_text("Приложение", text)(letter)
+    assert codes(check(letter, tmp_path)) == set()
+
+
+def test_attachment_in_text_is_not_a_mark(tmp_path):
+    letter = Letter()
+    with_text("Приложение", "Приложение к письму направим отдельно")(letter)
+    assert codes(check(letter, tmp_path)) == set()
+
+
+def test_executor_forms_and_missing_mark(tmp_path):
+    for name in ("А.П. Сидорова", "Сидорова А.П.", "Исп. Сидорова Анна Петровна"):
+        letter = Letter()
+        with_text("Сидорова", name)(letter)
+        assert codes(check(letter, tmp_path)) == set(), name
+    letter = Letter()
+    for p in letter.doc.paragraphs[-3:]:
+        p._p.getparent().remove(p._p)
+    assert codes(check(letter, tmp_path)) == set()
+
+
+def test_attachment_and_executor_checks_can_be_turned_off(tmp_path):
+    letter = Letter()
+    SPOILED["attachment-sheets"][1](letter)
+    SPOILED["executor-name"][1](letter)
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text("[attachment]\ncheck = false\n[executor]\ncheck = false\n", encoding="utf-8")
+    assert codes(check(letter, tmp_path, cfg)) == set()
