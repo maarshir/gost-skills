@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Проверка оформления .docx по ГОСТ 7.32-2017 или по своей методичке.
 
-Скрипт ничего не меняет в файле. Он читает разметку документа и печатает,
-что не так и где: номер абзаца, начало его текста и раздел, в котором он стоит.
+Скрипт читает разметку документа и печатает, что не так и где: номер абзаца,
+начало его текста и раздел, в котором он стоит. Исходный файл он не меняет.
+С флагом --fix однозначные ошибки (поля, шрифт и размер стиля «Обычный»)
+исправляются в копии «имя.fixed.docx», а отчёт показывает, что осталось.
 
     python check_docx.py работа.docx
     python check_docx.py работа.docx --config методичка.toml
     python check_docx.py работа.docx --json
+    python check_docx.py работа.docx --fix
 
 Код выхода: 0 если ошибок нет (замечания допустимы), 1 если есть ошибки,
 2 если файл не удалось прочитать.
@@ -976,11 +979,162 @@ class Checker:
                             + ", ".join(map(str, order[:10])) + ("…" if len(order) > 10 else ""), "6.16")
 
 
+# ---------------------------------------------------------------- исправление
+
+def fixed_path(path: Path) -> Path:
+    return path.with_name(path.stem + ".fixed.docx")
+
+
+class Fixer:
+    """Исправляет в копии только то, что однозначно следует из профиля.
+
+    Поля страницы ставятся по профилю, у стиля «Обычный» шрифт и размер.
+    Шрифт и размер, заданные прямо у текста или в других стилях, не трогаются:
+    там скрипт не может знать, задумано это или нет.
+    """
+
+    def __init__(self, path: Path, config: dict) -> None:
+        self.path = path
+        self.config = config
+        self.doc = docx.Document(str(path))
+        self.fixed: list[str] = []
+
+    def run(self) -> list[str]:
+        self.fix_margins()
+        self.fix_normal_style()
+        return self.fixed
+
+    def fix_margins(self) -> None:
+        cfg = self.config["page"]
+        tol = cfg.get("tolerance_mm", 1)
+        sides = (("left_margin", "левое", "margin_left_mm"), ("right_margin", "правое", "margin_right_mm"),
+                 ("top_margin", "верхнее", "margin_top_mm"), ("bottom_margin", "нижнее", "margin_bottom_mm"))
+        many = len(self.doc.sections) > 1
+        for n, section in enumerate(self.doc.sections, start=1):
+            if section.page_width is None or section.page_height is None:
+                continue
+            if section.page_width > section.page_height:
+                continue  # альбомные части проверка тоже пропускает
+            for attr, label, key in sides:
+                value = getattr(section, attr)
+                if value is None:
+                    continue
+                mm = value / EMU_PER_MM
+                if abs(mm - cfg[key]) > tol:
+                    setattr(section, attr, round(cfg[key] * EMU_PER_MM))
+                    where = f" (часть документа {n})" if many else ""
+                    self.fixed.append(f"Поле {label} {mm:.0f} мм → {cfg[key]} мм{where}")
+
+    def _normal_style(self):
+        root = self.doc.styles.element
+        for s in root.findall(qn("w:style")):
+            if s.get(qn("w:type")) == "paragraph" and s.get(qn("w:default")) in ("1", "true", "on"):
+                return s
+        return None
+
+    def fix_normal_style(self) -> None:
+        style = self._normal_style()
+        if style is None:
+            return
+        cfg = self.config["text"]
+        styles = Styles(self.doc)
+
+        def resolved(getter):
+            for src in (style.find(qn("w:rPr")), styles.rpr_default):
+                if src is not None:
+                    value = getter(src)
+                    if value is not None:
+                        return value
+            return None
+
+        def font_of(rpr):
+            fonts = rpr.find(qn("w:rFonts"))
+            if fonts is None:
+                return None
+            for attr in ("w:hAnsiTheme", "w:hAnsi", "w:asciiTheme", "w:ascii"):
+                val = fonts.get(qn(attr))
+                if val:
+                    if attr.endswith("Theme"):
+                        return styles.theme.get("major" if val.startswith("major") else "minor")
+                    return val
+            return None
+
+        def size_of(rpr):
+            sz = rpr.find(qn("w:sz"))
+            return int(sz.get(qn("w:val"))) / 2 if sz is not None else None
+
+        name = style.find(qn("w:name"))
+        label = "«Обычный»" if name is None or name.get(qn("w:val")) in ("Normal", "Обычный") else (
+            f"«{name.get(qn('w:val'))}»")
+        rpr = style.find(qn("w:rPr"))
+
+        need_font = cfg.get("font", "")
+        current = resolved(font_of)
+        if need_font and current != need_font:
+            if rpr is None:
+                rpr = style.get_or_add_rPr() if hasattr(style, "get_or_add_rPr") else etree.SubElement(
+                    style, qn("w:rPr"))
+            fonts = rpr.find(qn("w:rFonts"))
+            if fonts is None:
+                fonts = etree.SubElement(rpr, qn("w:rFonts"))
+            # Тема перекрывает явное имя шрифта, поэтому ссылки на тему убираются
+            for attr in ("w:asciiTheme", "w:hAnsiTheme", "w:cstheme"):
+                fonts.attrib.pop(qn(attr), None)
+            for attr in ("w:ascii", "w:hAnsi", "w:cs"):
+                fonts.set(qn(attr), need_font)
+            self._order_rpr(rpr)
+            self.fixed.append(f"Шрифт стиля {label}: {current or 'не задан'} → {need_font}")
+
+        size_min = cfg.get("size_min_pt", 0)
+        size_exact = cfg.get("size_pt", 0)
+        size = resolved(size_of) or 10.0
+        target = None
+        if size_exact and abs(size - size_exact) > 0.01:
+            target = size_exact
+        elif not size_exact and size < size_min:
+            target = size_min
+        if target:
+            if rpr is None:
+                rpr = style.get_or_add_rPr() if hasattr(style, "get_or_add_rPr") else etree.SubElement(
+                    style, qn("w:rPr"))
+            half = str(round(target * 2))
+            for tag in ("w:sz", "w:szCs"):
+                el = rpr.find(qn(tag))
+                if el is None:
+                    el = etree.SubElement(rpr, qn(tag))
+                el.set(qn("w:val"), half)
+            self._order_rpr(rpr)
+            self.fixed.append(f"Размер шрифта стиля {label}: {size:g} пт → {target:g} пт")
+
+    @staticmethod
+    def _order_rpr(rpr) -> None:
+        """Word строго следит за порядком элементов в w:rPr: sz и szCs ставятся на своё место."""
+        order = ["rStyle", "rFonts", "b", "bCs", "i", "iCs", "caps", "smallCaps", "strike", "dstrike",
+                 "outline", "shadow", "emboss", "imprint", "noProof", "snapToGrid", "vanish", "webHidden",
+                 "color", "spacing", "w", "kern", "position", "sz", "szCs", "highlight", "u", "effect",
+                 "bdr", "shd", "fitText", "vertAlign", "rtl", "cs", "em", "lang", "eastAsianLayout",
+                 "specVanish", "oMath"]
+        rank = {qn(f"w:{t}"): i for i, t in enumerate(order)}
+        children = list(rpr)
+        children.sort(key=lambda el: rank.get(el.tag, len(order)))
+        for el in children:
+            rpr.remove(el)
+            rpr.append(el)
+
+    def save(self, out: Path) -> None:
+        self.doc.save(str(out))
+
+
 # ---------------------------------------------------------------- вывод
 
-def render_text(path: Path, config: dict, report: Report, limit: int = 5) -> str:
-    lines = [f"Проверка: {path.name}, профиль «{config.get('name', '')}»",
-             f"Ошибок: {report.count(ERROR)}, замечаний: {report.count(WARNING)}", ""]
+def render_text(path: Path, config: dict, report: Report, limit: int = 5,
+                fixed: list[str] | None = None) -> str:
+    lines = [f"Проверка: {path.name}, профиль «{config.get('name', '')}»"]
+    if fixed is not None:
+        lines.append("ИСПРАВЛЕНО")
+        lines += [f"- {item}" for item in fixed] or ["- ничего: однозначных ошибок для исправления нет"]
+        lines += ["", "ОСТАЛОСЬ ИСПРАВИТЬ ВРУЧНУЮ"]
+    lines += [f"Ошибок: {report.count(ERROR)}, замечаний: {report.count(WARNING)}", ""]
     for severity, title in ((ERROR, "ОШИБКИ"), (WARNING, "ЗАМЕЧАНИЯ")):
         items = [i for i in report.issues if i.severity == severity]
         if not items:
@@ -1008,7 +1162,7 @@ def render_text(path: Path, config: dict, report: Report, limit: int = 5) -> str
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_json(path: Path, config: dict, report: Report) -> str:
+def render_json(path: Path, config: dict, report: Report, fixed: list[str] | None = None) -> str:
     data = {
         "file": path.name,
         "profile": config.get("name", ""),
@@ -1021,6 +1175,8 @@ def render_json(path: Path, config: dict, report: Report) -> str:
         ],
         "notes": report.notes,
     }
+    if fixed is not None:
+        data["fixed"] = fixed
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
@@ -1030,14 +1186,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, help="настройки методички (.toml), дополняют профиль ГОСТ")
     parser.add_argument("--json", action="store_true", help="вывод в JSON")
     parser.add_argument("--limit", type=int, default=5, help="сколько мест показывать на одно нарушение")
+    parser.add_argument("--fix", action="store_true",
+                        help="исправить однозначное в копии имя.fixed.docx и показать, что осталось")
+    parser.add_argument("--force", action="store_true", help="с --fix: перезаписать готовую копию")
     args = parser.parse_args(argv)
 
     if args.file.suffix.lower() != ".docx":
         print(f"Нужен файл .docx, а передан {args.file.name}. Файл .doc сначала сохраните как .docx.")
         return 2
+    target, fixed = args.file, None
+    if args.fix:
+        target = fixed_path(args.file)
+        if target.exists() and not args.force:
+            print(f"Копия {target.name} уже есть. Чтобы перезаписать её, добавьте --force.")
+            return 2
     try:
         config = load_config(args.config)
-        checker = Checker(args.file, config)
+        if args.fix:
+            fixer = Fixer(args.file, config)
+            fixed = fixer.run()
+            fixer.save(target)
+        checker = Checker(target, config)
     except FileNotFoundError as e:
         print(f"Файл не найден: {e.filename or e}")
         return 2
@@ -1049,9 +1218,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     report = checker.run()
     if args.json:
-        print(render_json(args.file, config, report))
+        print(render_json(target, config, report, fixed))
     else:
-        print(render_text(args.file, config, report, args.limit), end="")
+        print(render_text(target, config, report, args.limit, fixed), end="")
     return 1 if report.count(ERROR) else 0
 
 

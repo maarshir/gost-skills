@@ -66,11 +66,12 @@ git clone https://github.com/maarshir/gost-skills && cd gost-skills
 pip install -r requirements.txt
 python skills/gost-report/scripts/check_docx.py работа.docx
 python skills/gost-report/scripts/check_docx.py работа.docx --config методичка.toml --json
+python skills/gost-report/scripts/check_docx.py работа.docx --fix
 python skills/gost-bibliography/scripts/check_bibliography.py список.txt
 python skills/gost-business/scripts/check_docx.py письмо.docx
 ```
 
-Файл не меняется. Требования методички или инструкции организации задаются коротким файлом поверх ГОСТа: [пример для работы](skills/gost-report/assets/methodichka-example.toml), [пример для списка](skills/gost-bibliography/assets/methodichka-example.toml), [пример для деловых документов](skills/gost-business/assets/instruction-example.toml).
+Исходный файл не меняется. С `--fix` поля страницы и шрифт и размер стиля «Обычный» исправляются в копии `работа.fixed.docx`, а отчёт показывает, что исправлено и что осталось поправить руками. Требования методички или инструкции организации задаются коротким файлом поверх ГОСТа: [пример для работы](skills/gost-report/assets/methodichka-example.toml), [пример для списка](skills/gost-bibliography/assets/methodichka-example.toml), [пример для деловых документов](skills/gost-business/assets/instruction-example.toml).
 
 ## Что было непросто
 
@@ -81,7 +82,8 @@ python skills/gost-business/scripts/check_docx.py письмо.docx
 
 ## Что дальше
 
-- Исправление однозначных ошибок в копии файла (`--fix`): поля, стиль «Обычный», тире и точки в подписях, точка после номера заголовка.
+- `--fix` для подписей и заголовков: тире и точка в подписях рисунков и таблиц, точка после номера заголовка.
+- `--fix` для деловых документов (gost-business).
 - Проверка состава и порядка реквизитов в деловом документе.
 
-177 тестов. Лицензия MIT.
+184 теста. Лицензия MIT.
