@@ -3,8 +3,9 @@
 
 Скрипт читает разметку документа и печатает, что не так и где: номер абзаца,
 начало его текста и раздел, в котором он стоит. Исходный файл он не меняет.
-С флагом --fix однозначные ошибки (поля, шрифт и размер стиля «Обычный»)
-исправляются в копии «имя.fixed.docx», а отчёт показывает, что осталось.
+С флагом --fix однозначные ошибки (поля, шрифт и размер стиля «Обычный»,
+тире и точка в подписях, точка после номера заголовка) исправляются в копии
+«имя.fixed.docx», а отчёт показывает, что осталось.
 
     python check_docx.py работа.docx
     python check_docx.py работа.docx --config методичка.toml
@@ -373,10 +374,10 @@ class Block:
 
 
 class Checker:
-    def __init__(self, path: Path, config: dict) -> None:
+    def __init__(self, path: Path, config: dict, document=None) -> None:
         self.path = path
         self.config = config
-        self.doc = docx.Document(str(path))
+        self.doc = document if document is not None else docx.Document(str(path))
         self.styles = Styles(self.doc)
         self.report = Report()
         self.blocks = self._read_blocks()
@@ -991,6 +992,12 @@ class Fixer:
     Поля страницы ставятся по профилю, у стиля «Обычный» шрифт и размер.
     Шрифт и размер, заданные прямо у текста или в других стилях, не трогаются:
     там скрипт не может знать, задумано это или нет.
+
+    В подписях рисунков и таблиц ставится тире после номера и убирается точка
+    в конце, в заголовках разделов убирается точка после номера. Текст меняется
+    только внутри одного фрагмента (w:t), поэтому оформление остаётся прежним.
+    Если нужное место разбито на несколько фрагментов, абзац не трогается
+    и остаётся в отчёте как ошибка.
     """
 
     def __init__(self, path: Path, config: dict) -> None:
@@ -1002,7 +1009,70 @@ class Fixer:
     def run(self) -> list[str]:
         self.fix_margins()
         self.fix_normal_style()
+        self.fix_captions_and_headings()
         return self.fixed
+
+    @staticmethod
+    def _replace_in_one_run(p, start: int, end: int, new: str) -> bool:
+        """Заменяет символы start:end текста абзаца, если они лежат в одном w:t."""
+        pos = 0
+        for node in p.iter(qn("w:t"), qn("w:tab")):
+            text = (node.text or "") if node.tag == qn("w:t") else "\t"
+            if pos <= start and end <= pos + len(text):
+                if node.tag != qn("w:t"):
+                    return False
+                a, b = start - pos, end - pos
+                node.text = text[:a] + new + text[b:]
+                if node.text != node.text.strip():
+                    node.set(qn("xml:space"), "preserve")
+                return True
+            if pos + len(text) > start:
+                return False  # место начинается в одном фрагменте, а кончается в другом
+            pos += len(text)
+        return False
+
+    def fix_captions_and_headings(self) -> None:
+        checker = Checker(self.path, self.config, self.doc)
+        checker.assign_roles()
+        dashes = self.config["captions"].get("dashes") or []
+        for b in checker.blocks:
+            if b.kind != "p" or b.match is None:
+                continue
+            before = para_text(b.el)
+            lead = len(before) - len(before.lstrip())
+            if b.role == "heading":
+                self._fix_heading(b, lead)
+            elif b.role in ("figure", "table_title"):
+                self._fix_caption(b, lead, dashes)
+            after = para_text(b.el)
+            if after != before:
+                kind = "Заголовок" if b.role == "heading" else "Подпись"
+                self.fixed.append(f"{kind} «{short(before.strip(), 60)}» → «{short(after.strip(), 60)}» "
+                                  f"(абзац {b.index})")
+
+    def _fix_heading(self, b: Block, lead: int) -> None:
+        m = b.match
+        if not m.group(2):
+            return
+        # номер, точка и первая буква названия должны быть в одном фрагменте
+        self._replace_in_one_run(b.el, lead + m.start(1), lead + m.start(3) + 1,
+                                 m.group(1) + " " + m.group(3)[0])
+
+    def _fix_caption(self, b: Block, lead: int, dashes: list[str]) -> None:
+        m = b.match
+        rest = m.group(3)
+        title = rest[1:].strip()
+        if not rest or not title:
+            return
+        # сначала точка в конце: её место дальше по тексту и не сдвигается правкой тире
+        if title.endswith(".") and not title.endswith(".."):
+            end = lead + m.end(3)
+            self._replace_in_one_run(b.el, end - 1, end, "")
+        if dashes and rest[0] not in dashes:
+            title_start = m.start(3) + len(rest) - len(rest[1:].lstrip())
+            # конец номера, знак и первая буква названия должны быть в одном фрагменте
+            self._replace_in_one_run(b.el, lead + m.end(2), lead + title_start + 1,
+                                     f" {dashes[0]} " + title[0])
 
     def fix_margins(self) -> None:
         cfg = self.config["page"]

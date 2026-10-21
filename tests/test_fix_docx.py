@@ -102,3 +102,98 @@ def test_without_fix_no_copy(tmp_path):
     path = Path(broken().save(tmp_path / "work.docx"))
     assert check_docx.main([str(path)]) == 1
     assert not (tmp_path / "work.fixed.docx").exists()
+
+
+def replace_text(b, old, new):
+    for p in b.doc.paragraphs:
+        if p.text == old:
+            p.runs[0].text = new
+            return p
+    raise AssertionError(old)
+
+
+def split_runs(b, old, parts):
+    for p in b.doc.paragraphs:
+        if p.text == old:
+            run = p.runs[0]
+            run.text = parts[0]
+            for part in parts[1:]:
+                p.add_run(part).bold = run.bold
+            return p
+    raise AssertionError(old)
+
+
+def fix(tmp_path, b, *args):
+    path = Path(b.save(tmp_path / "work.docx"))
+    before = path.read_bytes()
+    check_docx.main([str(path), "--fix", *args])
+    assert path.read_bytes() == before
+    copy = tmp_path / "work.fixed.docx"
+    return copy, [p.text for p in check_docx.docx.Document(str(copy)).paragraphs]
+
+
+def test_fix_figure_dash(tmp_path, capsys):
+    b = good_document()
+    replace_text(b, "Рисунок 1 – Схема поиска", "Рисунок 1 - Схема поиска")
+    copy, texts = fix(tmp_path, b)
+    assert "Рисунок 1 – Схема поиска" in texts
+    assert "Подпись «Рисунок 1 - Схема поиска» → «Рисунок 1 – Схема поиска»" in capsys.readouterr().out
+    assert "figure-dash" not in codes(check(copy))
+
+
+def test_fix_table_dash_after_dot(tmp_path):
+    b = good_document()
+    replace_text(b, "Таблица 1 – Результаты сравнения", "Таблица 1. Результаты сравнения")
+    copy, texts = fix(tmp_path, b)
+    assert "Таблица 1 – Результаты сравнения" in texts
+    assert "table-dash" not in codes(check(copy))
+
+
+def test_fix_caption_dot(tmp_path):
+    b = good_document()
+    replace_text(b, "Рисунок 1 – Схема поиска", "Рисунок 1 – Схема поиска.")
+    replace_text(b, "Таблица 1 – Результаты сравнения", "Таблица 1 – Результаты сравнения.")
+    copy, texts = fix(tmp_path, b)
+    assert "Рисунок 1 – Схема поиска" in texts and "Таблица 1 – Результаты сравнения" in texts
+    assert not codes(check(copy)) & {"figure-dot", "table-dot"}
+
+
+def test_fix_dash_and_dot_together_keeps_formatting(tmp_path):
+    b = good_document()
+    p = replace_text(b, "Рисунок 1 – Схема поиска", "Рисунок 1: Схема поиска.")
+    p.runs[0].italic = True
+    copy, _ = fix(tmp_path, b)
+    doc = check_docx.docx.Document(str(copy))
+    fixed = [x for x in doc.paragraphs if x.text == "Рисунок 1 – Схема поиска"]
+    assert fixed and fixed[0].runs[0].italic
+
+
+def test_fix_heading_number_dot(tmp_path, capsys):
+    b = good_document()
+    replace_text(b, "1.1 Сравнение", "1.1. Сравнение")
+    copy, texts = fix(tmp_path, b)
+    assert "1.1 Сравнение" in texts
+    assert "Заголовок «1.1. Сравнение» → «1.1 Сравнение»" in capsys.readouterr().out
+    assert "heading-number-dot" not in codes(check(copy))
+
+
+def test_fix_skips_split_runs(tmp_path, capsys):
+    b = good_document()
+    split_runs(b, "Рисунок 1 – Схема поиска", ["Рисунок 1 ", "- Схема поиска"])
+    split_runs(b, "1.1 Сравнение", ["1.1.", " Сравнение"])
+    copy, texts = fix(tmp_path, b)
+    assert "Рисунок 1 - Схема поиска" in texts and "1.1. Сравнение" in texts
+    out = capsys.readouterr().out
+    assert "Подпись «" not in out and "Заголовок «" not in out
+    assert {"figure-dash", "heading-number-dot"} <= codes(check(copy))
+
+
+def test_fix_respects_profile_dashes(tmp_path):
+    cfg = tmp_path / "m.toml"
+    cfg.write_text('[captions]\ndashes = ["—"]\n', encoding="utf-8")
+    b = good_document()
+    replace_text(b, "Рисунок 1 – Схема поиска", "Рисунок 1 - Схема поиска")
+    replace_text(b, "Таблица 1 – Результаты сравнения", "Таблица 1 — Результаты сравнения")
+    copy, texts = fix(tmp_path, b, "--config", str(cfg))
+    assert "Рисунок 1 — Схема поиска" in texts
+    assert not codes(check(copy, cfg)) & {"figure-dash", "table-dash"}
