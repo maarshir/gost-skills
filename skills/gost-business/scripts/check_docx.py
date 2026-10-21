@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Проверка деловых документов .docx по ГОСТ Р 7.0.97-2016 или по инструкции организации.
 
-Скрипт ничего не меняет в файле. Он проверяет лист, шрифт, абзацный отступ,
+Исходный файл скрипт не меняет. Он проверяет лист, шрифт, абзацный отступ,
 даты, падеж адресата, расшифровку подписи, точку после заголовка к тексту,
 отметки о приложении и об исполнителе и печатает, что не так и где:
 номер абзаца и начало его текста.
@@ -9,6 +9,11 @@
     python check_docx.py письмо.docx
     python check_docx.py письмо.docx --config инструкция.toml
     python check_docx.py письмо.docx --json
+    python check_docx.py письмо.docx --fix
+
+С --fix рядом появляется копия письмо.fixed.docx: в ней поля страницы и шрифт
+и размер стиля «Обычный» поставлены по профилю, отчёт показывает, что исправлено
+и что осталось исправить вручную.
 
 Чтение разметки Word и формат отчёта общие с навыком gost-report, поэтому
 папка gost-report должна лежать рядом (так ставятся все навыки репозитория).
@@ -417,13 +422,30 @@ class Checker:
             self.report.add(ERROR, "executor-phone", "В отметке об исполнителе нет номера телефона", rule, place)
 
 
+class Fixer(base.Fixer):
+    """Исправляет в копии узкие поля страницы и шрифт и размер стиля «Обычный».
+
+    Подписи и заголовки разделов в деловых документах устроены иначе, чем в отчёте,
+    поэтому правка подписей из gost-report здесь не вызывается. Абзацный отступ,
+    даты и реквизиты остаются в отчёте: по ним скрипт не может решить однозначно.
+    """
+
+    def run(self) -> list[str]:
+        cfg = self.config["text"]
+        self.fix_margins(at_least=True)  # раздел 4 задаёт поля «не менее»
+        self.fix_normal_style(fonts=cfg.get("fonts", []), size_min=cfg.get("size_min_pt", 0),
+                              size_max=cfg.get("size_max_pt", 0), size_exact=0)
+        return self.fixed
+
+
 CLEAN = ("Нарушений не найдено. Проверьте глазами то, что скрипт не видит: состав и порядок реквизитов, "
          "место отметки об исполнителе на последнем листе.")
 
 
-def render_text(path: Path, config: dict, report: Report, limit: int = 5) -> str:
+def render_text(path: Path, config: dict, report: Report, limit: int = 5,
+                fixed: list[str] | None = None) -> str:
     """Отчёт как у gost-report, только итог для чистого документа про деловые реквизиты."""
-    text = base.render_text(path, config, report, limit)
+    text = base.render_text(path, config, report, limit, fixed)
     if report.issues:
         return text
     last = text.rstrip("\n").rsplit("\n", 1)
@@ -436,14 +458,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, help="настройки инструкции организации (.toml), дополняют ГОСТ")
     parser.add_argument("--json", action="store_true", help="вывод в JSON")
     parser.add_argument("--limit", type=int, default=5, help="сколько мест показывать на одно нарушение")
+    parser.add_argument("--fix", action="store_true",
+                        help="исправить поля и стиль «Обычный» в копии имя.fixed.docx и показать, что осталось")
+    parser.add_argument("--force", action="store_true", help="с --fix: перезаписать готовую копию")
     args = parser.parse_args(argv)
 
     if args.file.suffix.lower() != ".docx":
         print(f"Нужен файл .docx, а передан {args.file.name}. Файл .doc сначала сохраните как .docx.")
         return 2
+    target, fixed = args.file, None
+    if args.fix:
+        target = base.fixed_path(args.file)
+        if target.exists() and not args.force:
+            print(f"Копия {target.name} уже есть. Чтобы перезаписать её, добавьте --force.")
+            return 2
     try:
         config = load_config(args.config)
-        checker = Checker(args.file, config)
+        if args.fix:
+            fixer = Fixer(args.file, config)
+            fixed = fixer.run()
+            fixer.save(target)
+        checker = Checker(target, config)
     except FileNotFoundError as e:
         print(f"Файл не найден: {e.filename or e}")
         return 2
@@ -455,9 +490,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     report = checker.run()
     if args.json:
-        print(base.render_json(args.file, config, report))
+        print(base.render_json(target, config, report, fixed))
     else:
-        print(render_text(args.file, config, report, args.limit), end="")
+        print(render_text(target, config, report, args.limit, fixed), end="")
     return 1 if report.count(ERROR) else 0
 
 

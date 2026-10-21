@@ -1074,7 +1074,8 @@ class Fixer:
             self._replace_in_one_run(b.el, lead + m.end(2), lead + title_start + 1,
                                      f" {dashes[0]} " + title[0])
 
-    def fix_margins(self) -> None:
+    def fix_margins(self, at_least: bool = False) -> None:
+        """Поля по профилю. С at_least значения профиля наименьшие: широкое поле не трогается."""
         cfg = self.config["page"]
         tol = cfg.get("tolerance_mm", 1)
         sides = (("left_margin", "левое", "margin_left_mm"), ("right_margin", "правое", "margin_right_mm"),
@@ -1090,7 +1091,8 @@ class Fixer:
                 if value is None:
                     continue
                 mm = value / EMU_PER_MM
-                if abs(mm - cfg[key]) > tol:
+                wrong = mm < cfg[key] - tol if at_least else abs(mm - cfg[key]) > tol
+                if wrong:
                     setattr(section, attr, round(cfg[key] * EMU_PER_MM))
                     where = f" (часть документа {n})" if many else ""
                     self.fixed.append(f"Поле {label} {mm:.0f} мм → {cfg[key]} мм{where}")
@@ -1102,11 +1104,25 @@ class Fixer:
                 return s
         return None
 
-    def fix_normal_style(self) -> None:
+    def fix_normal_style(self, fonts: list[str] | None = None, size_min: float | None = None,
+                         size_max: float = 0, size_exact: float | None = None) -> None:
+        """Шрифт и размер стиля «Обычный».
+
+        По умолчанию значения берутся из профиля [text]: один шрифт font, размер size_pt
+        или не меньше size_min_pt. Другой навык с другим профилем передаёт их сам:
+        fonts допускает несколько шрифтов (неподходящий меняется на первый),
+        size_max ограничивает размер сверху.
+        """
         style = self._normal_style()
         if style is None:
             return
         cfg = self.config["text"]
+        if fonts is None:
+            fonts = [cfg["font"]] if cfg.get("font") else []
+        if size_min is None:
+            size_min = cfg.get("size_min_pt", 0)
+        if size_exact is None:
+            size_exact = cfg.get("size_pt", 0)
         styles = Styles(self.doc)
 
         def resolved(getter):
@@ -1138,31 +1154,31 @@ class Fixer:
             f"«{name.get(qn('w:val'))}»")
         rpr = style.find(qn("w:rPr"))
 
-        need_font = cfg.get("font", "")
+        need_font = fonts[0] if fonts else ""
         current = resolved(font_of)
-        if need_font and current != need_font:
+        if fonts and current not in fonts:
             if rpr is None:
                 rpr = style.get_or_add_rPr() if hasattr(style, "get_or_add_rPr") else etree.SubElement(
                     style, qn("w:rPr"))
-            fonts = rpr.find(qn("w:rFonts"))
-            if fonts is None:
-                fonts = etree.SubElement(rpr, qn("w:rFonts"))
+            rfonts = rpr.find(qn("w:rFonts"))
+            if rfonts is None:
+                rfonts = etree.SubElement(rpr, qn("w:rFonts"))
             # Тема перекрывает явное имя шрифта, поэтому ссылки на тему убираются
             for attr in ("w:asciiTheme", "w:hAnsiTheme", "w:cstheme"):
-                fonts.attrib.pop(qn(attr), None)
+                rfonts.attrib.pop(qn(attr), None)
             for attr in ("w:ascii", "w:hAnsi", "w:cs"):
-                fonts.set(qn(attr), need_font)
+                rfonts.set(qn(attr), need_font)
             self._order_rpr(rpr)
             self.fixed.append(f"Шрифт стиля {label}: {current or 'не задан'} → {need_font}")
 
-        size_min = cfg.get("size_min_pt", 0)
-        size_exact = cfg.get("size_pt", 0)
         size = resolved(size_of) or 10.0
         target = None
         if size_exact and abs(size - size_exact) > 0.01:
             target = size_exact
         elif not size_exact and size < size_min:
             target = size_min
+        elif not size_exact and size_max and size > size_max + 0.01:
+            target = size_max
         if target:
             if rpr is None:
                 rpr = style.get_or_add_rPr() if hasattr(style, "get_or_add_rPr") else etree.SubElement(

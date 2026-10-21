@@ -69,9 +69,10 @@ python skills/gost-report/scripts/check_docx.py работа.docx --config ме�
 python skills/gost-report/scripts/check_docx.py работа.docx --fix
 python skills/gost-bibliography/scripts/check_bibliography.py список.txt
 python skills/gost-business/scripts/check_docx.py письмо.docx
+python skills/gost-business/scripts/check_docx.py письмо.docx --fix
 ```
 
-Исходный файл не меняется. С `--fix` поля страницы, шрифт и размер стиля «Обычный», тире и точка в подписях рисунков и таблиц и точка после номера заголовка исправляются в копии `работа.fixed.docx`, а отчёт показывает, что исправлено и что осталось поправить руками. Требования методички или инструкции организации задаются коротким файлом поверх ГОСТа: [пример для работы](skills/gost-report/assets/methodichka-example.toml), [пример для списка](skills/gost-bibliography/assets/methodichka-example.toml), [пример для деловых документов](skills/gost-business/assets/instruction-example.toml).
+Исходный файл не меняется. С `--fix` поля страницы, шрифт и размер стиля «Обычный», тире и точка в подписях рисунков и таблиц и точка после номера заголовка исправляются в копии `работа.fixed.docx`, а отчёт показывает, что исправлено и что осталось поправить руками. У деловых документов `--fix` расширяет слишком узкие поля до наименьших по ГОСТ Р 7.0.97 и ставит шрифт и размер стиля «Обычный»; отступ, даты и реквизиты остаются в отчёте. Требования методички или инструкции организации задаются коротким файлом поверх ГОСТа: [пример для работы](skills/gost-report/assets/methodichka-example.toml), [пример для списка](skills/gost-bibliography/assets/methodichka-example.toml), [пример для деловых документов](skills/gost-business/assets/instruction-example.toml).
 
 ## Что было непросто
 
@@ -83,8 +84,8 @@ python skills/gost-business/scripts/check_docx.py письмо.docx
 
 ## Что дальше
 
-- `--fix` для деловых документов (gost-business) и общий модуль для gost-report и gost-business.
+- Общий модуль для gost-report и gost-business: сейчас gost-business без папки gost-report рядом не запускается.
 - `--fix` для «Рис.» вместо «Рисунок» и для подписей, разбитых на несколько фрагментов.
 - Проверка состава и порядка реквизитов в деловом документе.
 
-191 тест. Лицензия MIT.
+200 тестов. Лицензия MIT.
