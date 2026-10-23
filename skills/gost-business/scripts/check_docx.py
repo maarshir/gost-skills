@@ -15,8 +15,8 @@
 и размер стиля «Обычный» поставлены по профилю, отчёт показывает, что исправлено
 и что осталось исправить вручную.
 
-Чтение разметки Word и формат отчёта общие с навыком gost-report, поэтому
-папка gost-report должна лежать рядом (так ставятся все навыки репозитория).
+Чтение разметки Word и формат отчёта лежат рядом в docx_common.py: это копия
+модуля из gost-report, поэтому навык работает и без других папок репозитория.
 
 Код выхода: 0 если ошибок нет (замечания допустимы), 1 если есть ошибки,
 2 если файл не удалось прочитать.
@@ -33,23 +33,23 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_PROFILE = HERE.parent / "assets" / "gost-r-7.0.97.toml"
-REPORT_SCRIPT = HERE.parent.parent / "gost-report" / "scripts" / "check_docx.py"
 
 
-def _load_report_module():
-    """Модуль проверки gost-report под своим именем: у обоих скриптов имя check_docx."""
-    if not REPORT_SCRIPT.exists():
-        print("Не найден навык gost-report рядом с gost-business: скрипт берёт из него чтение .docx. "
-              "Поставьте все навыки репозитория maarshir/gost-skills.")
-        sys.exit(2)
-    spec = importlib.util.spec_from_file_location("gost_report_check_docx", REPORT_SCRIPT)
+def _load_common():
+    """Общая часть из docx_common.py рядом, по пути от файла и под своим именем.
+
+    Папку скрипта в sys.path не добавляем: там лежит check_docx.py, и при общем
+    запуске тестов он закрыл бы одноимённый скрипт gost-report.
+    """
+    spec = importlib.util.spec_from_file_location("gost_business_docx_common", HERE / "docx_common.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-base = _load_report_module()
+base = _load_common()
+
 docx, qn, tomllib = base.docx, base.qn, base.tomllib
 ERROR, WARNING = base.ERROR, base.WARNING
 Place, Report, Styles = base.Place, base.Report, base.Styles
@@ -445,11 +445,7 @@ CLEAN = ("Нарушений не найдено. Проверьте глаза�
 def render_text(path: Path, config: dict, report: Report, limit: int = 5,
                 fixed: list[str] | None = None) -> str:
     """Отчёт как у gost-report, только итог для чистого документа про деловые реквизиты."""
-    text = base.render_text(path, config, report, limit, fixed)
-    if report.issues:
-        return text
-    last = text.rstrip("\n").rsplit("\n", 1)
-    return (last[0] + "\n" if len(last) > 1 else "") + CLEAN + "\n"
+    return base.render_text(path, config, report, limit, fixed, clean=CLEAN)
 
 
 def main(argv: list[str] | None = None) -> int:
